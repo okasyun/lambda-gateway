@@ -1,0 +1,111 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: okashun
+# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
+app: lambada
+# "service" is the name of this project. This will also be added to your AWS resource names.
+service: lambda-gateway
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ap-northeast-1
+  httpApi:
+    cors:
+      allowedOrigins:
+        - "https://${self:custom.bucketName}.s3.ap-northeast-1.amazonaws.com"
+  stage: dev
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+      Resource: "arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/tasks"
+    - Effect: Allow
+      Action:
+        - dynamodb:Scan
+      Resource: "arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/tasks"
+
+package:
+  individually: true
+  excludeDevDependencies: true
+
+plugins:
+  - serverless-api-gateway-throttling
+  - serverless-s3-sync
+
+custom:
+  esbuild:
+    bundle: true
+    minify: true
+    sourcemap: true
+    exclude: ["aws-sdk"]
+    target: "node20"
+    define:
+      "require.resolve": undefined
+      "process.env.API_URL_PREFIX": '"${ssm:API_URL_PREFIX}"' # ここで環境変数を直接埋め込み
+    platform: "node"
+    concurrency: 10
+    watch:
+      pattern: "src/**/*.ts"
+      ignore: "temp/**/*"
+  apiGatewayThrottling:
+    maxRequestsPerSecond: 10
+    maxConcurrentRequests: 5
+  bucketName: unique-s3-static-site
+  s3Sync:
+    buckets:
+      - bucketName: ${self:custom.bucketName}
+        localDir: static
+
+functions:
+  taskPost:
+    handler: src/taskHandler.post
+    events:
+      - httpApi:
+          method: post
+          path: /tasks
+  taskList:
+    handler: src/taskHandler.list
+    events:
+      - httpApi:
+          method: get
+          path: /tasks
+
+resources:
+  Resources:
+    TasksDynamoDBTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: tasks
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 5
+          WriteCapacityUnits: 5
+
+    StaticSiteS3Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+        WebsiteConfiguration:
+          IndexDocument: index.html
+    StaticSiteS3BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: StaticSiteS3Bucket
+        PolicyDocument:
+          Statement:
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+            Resource: "arn:aws:s3:::${self:custom.bucketName}/*"
